@@ -1,0 +1,4 @@
+pinterest_config.py
+pinterest_tokens.json
+__pycache__/
+.DS_Store
