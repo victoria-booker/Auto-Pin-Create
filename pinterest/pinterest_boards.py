@@ -10,7 +10,7 @@ board_section_id is optional — leave it None to pin straight to
 the board with no section.
 """
 
-from pinterest.pinterest_config import PINTEREST_ENV
+from pinterest.runtime_config import PINTEREST_ENV
 
 
 BOARD_MAP = {
