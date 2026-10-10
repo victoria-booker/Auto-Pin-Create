@@ -8,3 +8,4 @@ __pycache__/
 product_research/*.csv
 product_research/*.md
 product_research/*.json
+data/

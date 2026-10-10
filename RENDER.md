@@ -48,3 +48,25 @@ Do not put token JSON, API keys, or Pinterest credentials in the repository.
 The API seeds the persistent token file from the base64 value on first use;
 after that, the disk file is authoritative and is updated when Pinterest
 rotates tokens.
+## Scheduled pins
+
+`schedulePins` queues one to four pin variants and posts them on a drip
+(default: first immediately, then every 3 days). The queue (`pin_queue.db`)
+and the saved pin images live under `PIN_DATA_DIR`, which the Blueprint sets
+to the `/var/data` disk so they survive restarts and redeploys.
+
+A background thread inside the web service checks the queue every
+`PIN_WORKER_INTERVAL` seconds (default 60) and posts due pins. If Pinterest
+answers "Sorry! This site doesn't allow you to save Pins." it retries after
+about a minute, up to 3 attempts; any other error marks the pin failed.
+Check progress with `getScheduledPins`. Keep the service at one instance:
+two instances would each run a worker against their own disk.
+
+By default each variant is placed in the next free daily posting slot, one
+pin per slot, so products queued together spread out instead of posting in a
+burst. Spacing between a product's variants is measured from the slot each
+one actually got. Configure with optional env vars:
+- `PIN_DAILY_SLOTS`: comma-separated local times (default `09:00,14:00,20:00`)
+- `PIN_TIMEZONE`: IANA timezone for those times (default `America/Chicago`)
+
+Pass `use_slots: false` to `schedulePins` to post at exact times instead.

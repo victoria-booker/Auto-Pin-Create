@@ -16,18 +16,33 @@ Endpoints live in routers/, grouped by concern:
     routers/boards.py    — getBoards, ensureBoard, ensureSection
     routers/pins.py       — createPin, createPinByBoard, and their batch forms
     routers/research.py   — generateIdeas (product_research/idea_generator.py)
+    routers/schedule.py   — schedulePins, getScheduledPins, cancelScheduledPin
 Auth (the X-API-Key header check) is shared via api_auth.py and applied
 per-router, so individual endpoints don't repeat it.
+
+Scheduled pins are posted by a background thread (pinterest/pin_worker.py)
+started with the app; set PIN_WORKER_ENABLED=0 to turn it off.
 
 pip install fastapi uvicorn
 """
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from routers import boards, pins, research
+from pinterest.pin_worker import start_background_worker
+from routers import boards, pins, research, schedule
+
+
+@asynccontextmanager
+async def lifespan(app):
+    stop_worker = start_background_worker()
+    yield
+    stop_worker()
+
 
 app = FastAPI(
+    lifespan=lifespan,
     title="Pinterest Pin API",
     description="Creates Pinterest pins from finished product images and publishing copy, "
                 "and generates product ideas from cross-platform search signal.",
@@ -38,6 +53,7 @@ app = FastAPI(
 app.include_router(boards.router)
 app.include_router(pins.router)
 app.include_router(research.router)
+app.include_router(schedule.router)
 
 
 @app.get("/health", include_in_schema=False)

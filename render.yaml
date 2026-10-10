@@ -17,6 +17,8 @@ services:
         value: production
       - key: PINTEREST_TOKEN_FILE
         value: /var/data/pinterest_tokens.json
+      - key: PIN_DATA_DIR
+        value: /var/data
       - key: PINTEREST_TOKENS_JSON_B64
         sync: false
       - key: APIFY_API_TOKEN
