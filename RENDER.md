@@ -70,3 +70,16 @@ one actually got. Configure with optional env vars:
 - `PIN_TIMEZONE`: IANA timezone for those times (default `America/Chicago`)
 
 Pass `use_slots: false` to `schedulePins` to post at exact times instead.
+
+## Pin dashboard
+
+`https://<render-service>.onrender.com/dashboard` lists upcoming, posted,
+failed, and cancelled pins with image thumbnails. Queued pins can be
+rescheduled, posted now, or cancelled; failed and cancelled pins can be
+requeued. Times are shown and entered in `PIN_TIMEZONE`.
+
+Sign in with `DASHBOARD_PASSWORD` (falls back to `PIN_API_KEY` if unset).
+Each device stays signed in for 90 days, and the login form works with
+password-manager autofill. Changing `DASHBOARD_PASSWORD` signs out every
+device. Dashboard routes are excluded from `/openapi.json`, so the GPT
+Action never sees them.

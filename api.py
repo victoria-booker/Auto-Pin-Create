@@ -31,7 +31,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from pinterest.pin_worker import start_background_worker
-from routers import boards, pins, research, schedule
+from routers import boards, dashboard, pins, research, schedule
 
 
 @asynccontextmanager
@@ -54,6 +54,8 @@ app.include_router(boards.router)
 app.include_router(pins.router)
 app.include_router(research.router)
 app.include_router(schedule.router)
+app.include_router(dashboard.login_router)
+app.include_router(dashboard.router)
 
 
 @app.get("/health", include_in_schema=False)

@@ -116,18 +116,21 @@ def get_pin(pin_id):
     return dict(row) if row else None
 
 
-def list_pins(status=None, batch_id=None, limit=50):
+def list_pins(status=None, batch_id=None, limit=50, newest_first=False):
+    """status may be one status or a list of them."""
     query = "SELECT * FROM scheduled_pins"
     clauses, params = [], []
     if status:
-        clauses.append("status = ?")
-        params.append(status)
+        statuses = [status] if isinstance(status, str) else list(status)
+        clauses.append(f"status IN ({', '.join('?' for _ in statuses)})")
+        params.extend(statuses)
     if batch_id:
         clauses.append("batch_id = ?")
         params.append(batch_id)
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
-    query += " ORDER BY publish_at, id LIMIT ?"
+    direction = "DESC" if newest_first else "ASC"
+    query += f" ORDER BY publish_at {direction}, id {direction} LIMIT ?"
     params.append(limit)
     with closing(_connect()) as conn:
         return [dict(row) for row in conn.execute(query, params).fetchall()]
@@ -167,6 +170,34 @@ def cancel_pin(pin_id):
         cursor = conn.execute(
             "UPDATE scheduled_pins SET status = ? WHERE id = ? AND status = ?",
             (STATUS_CANCELLED, pin_id, STATUS_QUEUED),
+        )
+    return cursor.rowcount == 1
+
+
+def status_counts():
+    with closing(_connect()) as conn:
+        rows = conn.execute("SELECT status, COUNT(*) AS n FROM scheduled_pins GROUP BY status").fetchall()
+    return {row["status"]: row["n"] for row in rows}
+
+
+def reschedule_pin(pin_id, publish_at_iso):
+    """Moves a queued pin to a new time. Returns False if it isn't queued."""
+    with closing(_connect()) as conn, conn:
+        cursor = conn.execute(
+            "UPDATE scheduled_pins SET publish_at = ?, next_attempt_at = ? WHERE id = ? AND status = ?",
+            (publish_at_iso, publish_at_iso, pin_id, STATUS_QUEUED),
+        )
+    return cursor.rowcount == 1
+
+
+def requeue_pin(pin_id, publish_at_iso):
+    """Puts a failed or cancelled pin back in the queue with fresh attempts.
+    Returns False if it's in any other state."""
+    with closing(_connect()) as conn, conn:
+        cursor = conn.execute(
+            "UPDATE scheduled_pins SET status = ?, attempts = 0, last_error = NULL, publish_at = ?, next_attempt_at = ? "
+            "WHERE id = ? AND status IN (?, ?)",
+            (STATUS_QUEUED, publish_at_iso, publish_at_iso, pin_id, STATUS_FAILED, STATUS_CANCELLED),
         )
     return cursor.rowcount == 1
 
