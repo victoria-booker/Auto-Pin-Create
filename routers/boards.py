@@ -53,7 +53,10 @@ def get_boards():
     try:
         boards = list_boards()
     except Exception as exc:
-        raise HTTPException(status_code=502, detail="Could not retrieve Pinterest boards.") from exc
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not retrieve Pinterest boards ({type(exc).__name__}): {exc}",
+        ) from exc
     return BoardsResponse(boards=[{"id": board["id"], "name": board["name"]} for board in boards])
 
 

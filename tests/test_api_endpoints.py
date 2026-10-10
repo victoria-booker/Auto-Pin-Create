@@ -62,6 +62,13 @@ class ApiEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"boards": [{"id": "board-1", "name": "Ideas"}]})
 
+    def test_get_boards_reports_upstream_failure_reason(self):
+        with patch.object(self.boards, "list_boards", side_effect=RuntimeError("stored Pinterest token is invalid")):
+            response = self.client.get("/boards", headers=self.headers)
+
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("stored Pinterest token is invalid", response.json()["detail"])
+
     def test_categories_remain_available_for_category_pin_route(self):
         response = self.client.get("/categories", headers=self.headers)
 
