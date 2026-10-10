@@ -18,6 +18,7 @@ from product_research.suggest_providers import PROVIDERS
 router = APIRouter(dependencies=[Depends(require_api_key)])
 
 DEFAULT_PLATFORMS = ["amazon", "youtube"]  # the platforms that work with no extra setup
+ResearchPlatform = Literal["amazon", "youtube", "etsy", "pinterest", "tiktok", "google_trends"]
 
 
 # ---------- models ----------
@@ -29,8 +30,8 @@ class GenerateIdeasRequest(BaseModel):
         max_length=2,
         description="One or two seed keywords to research, e.g. ['funny mug', 'dog bandana'].",
     )
-    platforms: list[str] | None = Field(
-        None,
+    platforms: list[ResearchPlatform] = Field(
+        default_factory=list,
         description="Subset of amazon, youtube, etsy, pinterest, tiktok, google_trends. Defaults to "
                     "amazon + youtube (the only ones that work without extra setup right now). "
                     "google_trends gives real trend/spike signal but is rate-limited by Google and "

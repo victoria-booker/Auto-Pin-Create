@@ -54,6 +54,12 @@ class ApiEndpointTests(unittest.TestCase):
         )
         pin_schema = schema["components"]["schemas"]["PinRequest"]
         self.assertNotIn("openaiFileIdRefs", pin_schema.get("required", []))
+        platforms_schema = schema["components"]["schemas"]["GenerateIdeasRequest"]["properties"]["platforms"]
+        self.assertEqual(platforms_schema["type"], "array")
+        self.assertEqual(
+            platforms_schema["items"]["enum"],
+            ["amazon", "youtube", "etsy", "pinterest", "tiktok", "google_trends"],
+        )
 
     def test_get_boards_returns_pinterest_boards(self):
         with patch.object(self.boards, "list_boards", return_value=[{"id": "board-1", "name": "Ideas"}]):
