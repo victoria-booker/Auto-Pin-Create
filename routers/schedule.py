@@ -21,15 +21,30 @@ router = APIRouter(dependencies=[Depends(require_api_key)])
 
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 DOWNLOAD_TIMEOUT_SECONDS = 30
+# Pinterest's limits; checked here so the GPT can fix copy now instead of the pin failing days later
+MAX_TITLE_CHARS = 100
+MAX_DESCRIPTION_CHARS = 500
+MAX_ALT_TEXT_CHARS = 500
 
 
 # ---------- models ----------
 
 class PinVariant(BaseModel):
-    title: str = Field(..., description="Pin title for this variant.")
-    description: str = Field(..., description="Pin description for this variant.")
-    alt_text: str | None = Field(None, description="Optional alt text for this variant.")
+    title: str = Field(..., min_length=1, max_length=MAX_TITLE_CHARS, description="Pin title, at most 100 characters.")
+    description: str = Field(
+        ..., min_length=1, max_length=MAX_DESCRIPTION_CHARS, description="Pin description, at most 500 characters."
+    )
+    alt_text: str | None = Field(None, max_length=MAX_ALT_TEXT_CHARS, description="Optional alt text, at most 500 characters.")
     link: str | None = Field(None, description="Optional destination URL override; defaults to the request's link.")
+    board_name: str | None = Field(
+        None,
+        description="Optional board for this pin, overriding the request's board. Resolved or created if missing.",
+    )
+    board_id: str | None = Field(None, description="Optional board ID for this pin, overriding the request's board.")
+    section_name: str | None = Field(
+        None,
+        description="Optional section for this pin. Applies to this pin's own board if it sets one, otherwise to the request's board.",
+    )
     image_url: str | None = Field(None, description="Legacy image URL fallback. Prefer openaiFileIdRefs.")
     image_base64: str | None = Field(None, description="Legacy base64 fallback. Prefer openaiFileIdRefs.")
     image_ref: OpenAIFileRef | None = Field(None, description="Single image reference fallback.")
@@ -40,9 +55,15 @@ class PinVariant(BaseModel):
 
 
 class SchedulePinsRequest(BaseModel):
-    board_name: str | None = Field(None, description="Board name to resolve or create if missing.")
-    board_id: str | None = Field(None, description="Board ID to publish the pins to.")
-    section_name: str | None = Field(None, description="Optional section name to resolve or create under the board.")
+    board_name: str | None = Field(
+        None,
+        description="Default board for variants that don't set their own. Resolved or created if missing.",
+    )
+    board_id: str | None = Field(None, description="Default board ID for variants that don't set their own.")
+    section_name: str | None = Field(
+        None,
+        description="Default section under the default board, for variants that don't set their own board or section.",
+    )
     link: str = Field(..., description="Destination URL for every variant, usually the Etsy listing URL.")
     openaiFileIdRefs: list[OpenAIFileRef] | None = Field(
         None,
@@ -113,6 +134,42 @@ def _download(url):
     return response.content
 
 
+class _BoardResolver:
+    """Resolves each variant's board and section, looking each name up on
+    Pinterest only once per request even when several variants share it."""
+
+    def __init__(self):
+        self._boards = {}
+        self._sections = {}
+
+    def _board_id(self, board_id, board_name):
+        if board_id:
+            return board_id
+        key = board_name.strip().lower()
+        if key not in self._boards:
+            board, _ = ensure_board(board_name)
+            self._boards[key] = board["id"]
+        return self._boards[key]
+
+    def _section_id(self, board_id, section_name):
+        if not section_name:
+            return None
+        key = (board_id, section_name.strip().lower())
+        if key not in self._sections:
+            section, _ = ensure_section(board_id, section_name)
+            self._sections[key] = section["id"]
+        return self._sections[key]
+
+    def destination(self, variant, req):
+        """(board_id, section_id) for a variant. A variant's own board replaces the
+        request's board and section entirely; the request's section belongs to its board."""
+        if variant.board_id or variant.board_name:
+            board_id = self._board_id(variant.board_id, variant.board_name)
+            return board_id, self._section_id(board_id, variant.section_name)
+        board_id = self._board_id(req.board_id, req.board_name)
+        return board_id, self._section_id(board_id, variant.section_name or req.section_name)
+
+
 def _publish_times(start, count, spacing_days, use_slots):
     spacing = timedelta(days=spacing_days)
     if not use_slots:
@@ -170,8 +227,12 @@ def _variant_image(variant, fallback_ref=None):
     response_model=ScheduledPinsResponse,
 )
 def schedule_pins_endpoint(req: SchedulePinsRequest):
-    if not req.board_id and not req.board_name:
-        raise HTTPException(status_code=400, detail="Either board_id or board_name is required.")
+    for number, variant in enumerate(req.variants, start=1):
+        if not (variant.board_id or variant.board_name or req.board_id or req.board_name):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Variant {number}: set board_name or board_id on the variant or the request.",
+            )
 
     # fetch and validate every image before touching Pinterest or the queue,
     # so one bad variant rejects the whole request instead of half-queuing it
@@ -185,17 +246,15 @@ def schedule_pins_endpoint(req: SchedulePinsRequest):
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=f"Variant {number}: {exc}") from exc
 
-    try:
-        board_id = req.board_id
-        if not board_id:
-            board, _ = ensure_board(req.board_name)
-            board_id = board["id"]
-        section_id = None
-        if req.section_name:
-            section, _ = ensure_section(board_id, req.section_name)
-            section_id = section["id"]
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Could not resolve the board or section: {exc}") from exc
+    resolver = _BoardResolver()
+    destinations = []
+    for number, variant in enumerate(req.variants, start=1):
+        try:
+            destinations.append(resolver.destination(variant, req))
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502, detail=f"Variant {number}: could not resolve the board or section: {exc}"
+            ) from exc
 
     start = req.start_at or datetime.now(timezone.utc)
     if start.tzinfo is None:
@@ -206,7 +265,9 @@ def schedule_pins_endpoint(req: SchedulePinsRequest):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     rows = []
-    for variant, (data, content_type), publish_at in zip(req.variants, images, publish_times):
+    for variant, (data, content_type), publish_at, (board_id, section_id) in zip(
+        req.variants, images, publish_times, destinations
+    ):
         rows.append(
             {
                 "board_id": board_id,

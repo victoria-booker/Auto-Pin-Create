@@ -195,6 +195,67 @@ class PinScheduleTests(unittest.TestCase):
         self.assertEqual(self._schedule(board_name=None).status_code, 400)
         self.assertEqual(self._schedule(variant_count=5).status_code, 422)
 
+    def test_each_variant_can_target_its_own_board_and_section(self):
+        boards = MagicMock(side_effect=lambda name: ({"id": f"board-{name}"}, False))
+        sections = MagicMock(side_effect=lambda board_id, name: ({"id": f"{board_id}/{name}"}, False))
+        variant = {"description": "Desc", "image_base64": PNG_B64}
+
+        with patch.object(self.schedule, "ensure_board", boards), patch.object(self.schedule, "ensure_section", sections):
+            response = self._schedule(
+                board_name="Horror Tees",
+                section_name="Skulls",
+                variants=[
+                    {**variant, "title": "Default board and section"},
+                    {**variant, "title": "Own section on default board", "section_name": "Reapers"},
+                    {**variant, "title": "Own board", "board_name": "Halloween Gifts"},
+                    {**variant, "title": "Own board and section", "board_name": "90s Outfits", "section_name": "Grunge"},
+                ],
+            )
+
+        self.assertEqual(response.status_code, 200)
+        destinations = [(pin["board_id"], pin["section_id"]) for pin in response.json()["pins"]]
+        self.assertEqual(
+            destinations,
+            [
+                ("board-Horror Tees", "board-Horror Tees/Skulls"),
+                ("board-Horror Tees", "board-Horror Tees/Reapers"),
+                ("board-Halloween Gifts", None),  # the request's section belongs to the request's board
+                ("board-90s Outfits", "board-90s Outfits/Grunge"),
+            ],
+        )
+        # each distinct board name is looked up once even though two variants share one
+        self.assertEqual(boards.call_count, 3)
+
+    def test_board_may_be_set_only_on_variants(self):
+        response = self._schedule(
+            board_name=None,
+            variants=[{"title": "Pin", "description": "Desc", "image_base64": PNG_B64, "board_id": "board-7"}],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["pins"][0]["board_id"], "board-7")
+
+    def test_variant_without_any_board_is_rejected(self):
+        response = self._schedule(
+            board_name=None,
+            variants=[
+                {"title": "Pin 1", "description": "Desc", "image_base64": PNG_B64, "board_id": "board-7"},
+                {"title": "Pin 2", "description": "Desc", "image_base64": PNG_B64},
+            ],
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Variant 2", response.json()["detail"])
+
+    def test_copy_over_pinterest_limits_is_rejected_before_queuing(self):
+        variant = {"title": "Pin", "description": "Desc", "image_base64": PNG_B64}
+        for field, length in [("title", 101), ("description", 501), ("alt_text", 501)]:
+            with self.subTest(field=field):
+                self.assertEqual(self._schedule(variants=[{**variant, field: "x" * length}]).status_code, 422)
+
+        self.assertEqual(self._schedule(variants=[{**variant, "title": "x" * 100}]).status_code, 200)
+        self.assertEqual(len(self.pin_queue.list_pins()), 1)
+
     def test_variant_link_overrides_request_link(self):
         response = self._schedule(
             variants=[{"title": "Pin", "description": "Desc", "image_base64": PNG_B64, "link": "https://shop.example.com/p"}]
