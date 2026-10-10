@@ -15,11 +15,13 @@
   and manage Pins and boards on the developer's own account (via the
   Pinterest API OAuth scopes pins:read, pins:write, boards:read,
   boards:write). No data is collected from, or shared with, any third
-  party.</p>
+  boards:write). Requests needed to publish or manage Pins are sent to
+  Pinterest. The API is hosted by the developer on Render.</p>
 
   <h2>Data storage</h2>
-  <p>OAuth access and refresh tokens are stored locally by the developer
-  and are not transmitted to or stored by any other service.</p>
+  <p>OAuth access and refresh tokens are stored on a persistent disk attached
+  to the developer's Render service. Tokens are used only to authenticate
+  requests to Pinterest and are not included in the source repository.</p>
 
   <h2>Contact</h2>
   <p>Questions about this policy can be sent to the developer directly.</p>

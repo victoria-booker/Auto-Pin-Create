@@ -1,4 +1,10 @@
-pinterest_config.py
 pinterest_tokens.json
+pinterest/pinterest_config.py
+product_research/research_config.py
+.env
+.env.*
 __pycache__/
 .DS_Store
+product_research/*.csv
+product_research/*.md
+product_research/*.json

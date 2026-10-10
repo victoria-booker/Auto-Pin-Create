@@ -6,13 +6,13 @@ It spins up a tiny local server to catch Pinterest's redirect,
 exchanges the code for tokens, and saves them to pinterest_tokens.json.
 
 Before running:
-  1. Fill in CLIENT_ID and CLIENT_SECRET below (from your Pinterest app).
+    1. Set PINTEREST_CLIENT_ID and PINTEREST_CLIENT_SECRET from your Pinterest app.
   2. In the Pinterest app settings, set the Redirect URI to exactly:
        http://localhost:8085/callback
   3. pip install requests
 
-Run with:
-  python3 pinterest_setup.py
+Run with (from the repo root):
+  python3 pinterest/pinterest_setup.py
 """
 import base64
 import hashlib
@@ -20,6 +20,7 @@ import http.server
 import json
 import os
 import secrets
+import sys
 import threading
 import time
 import urllib.parse
@@ -27,11 +28,13 @@ import webbrowser
 
 import requests
 
-from pinterest_config import CLIENT_ID, CLIENT_SECRET
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
+
+from pinterest.runtime_config import CLIENT_ID, CLIENT_SECRET, PINTEREST_API_BASE, PINTEREST_ENV  # noqa: E402
 
 REDIRECT_URI = "http://localhost:8085/callback"
-SCOPES = "pins:read,pins:write,boards:read,boards:write"
-TOKEN_FILE = "pinterest_tokens.json"
+SCOPES = "pins:read,pins:write,boards:read,boards:write,trends:read"
+TOKEN_FILE = os.environ.get("PINTEREST_TOKEN_FILE", "pinterest_tokens.json")
 
 auth_code_holder = {}
 
@@ -91,7 +94,7 @@ def main():
 
     basic_auth = base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode()).decode()
     resp = requests.post(
-        "https://api.pinterest.com/v5/oauth/token",
+        f"{PINTEREST_API_BASE}/oauth/token",
         headers={
             "Authorization": f"Basic {basic_auth}",
             "Content-Type": "application/x-www-form-urlencoded",
@@ -105,13 +108,29 @@ def main():
     )
 
     if resp.status_code != 200:
-        print("Token exchange failed:", resp.status_code, resp.text)
+        try:
+            error_body = resp.json()
+        except ValueError:
+            error_body = resp.text.strip()
+        print(f"Token exchange failed for {PINTEREST_ENV}: {resp.status_code}: {error_body}")
         return
 
     tokens = resp.json()
     tokens["fetched_at"] = time.time()
+    try:
+        with open(TOKEN_FILE) as f:
+            stored_tokens = json.load(f)
+    except FileNotFoundError:
+        stored_tokens = {}
+    environments = stored_tokens.get("environments", {})
+    if not environments and "access_token" in stored_tokens:
+        environments["production"] = stored_tokens
+    environments[PINTEREST_ENV] = tokens
+    token_directory = os.path.dirname(TOKEN_FILE)
+    if token_directory:
+        os.makedirs(token_directory, exist_ok=True)
     with open(TOKEN_FILE, "w") as f:
-        json.dump(tokens, f, indent=2)
+        json.dump({"environments": environments}, f, indent=2)
 
     print(f"Saved tokens to {TOKEN_FILE}. Keep this file out of git.")
 

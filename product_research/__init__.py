@@ -1,0 +1,1 @@
+"""Research providers and API-facing product discovery helpers."""
