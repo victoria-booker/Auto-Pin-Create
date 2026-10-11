@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from api_auth import require_api_key
 from pinterest import pin_queue
 from pinterest.pin_slots import next_free_slot
-from pinterest.pinterest_pins import BASE64_IMAGE_TYPES, ensure_board, ensure_section
+from pinterest.pinterest_pins import BASE64_IMAGE_TYPES, create_board, ensure_section, list_boards
 from routers.pins import OpenAIFileRef, _image_source_url, _request_image_ref
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
@@ -137,21 +137,34 @@ def _download(url):
 
 
 class _BoardResolver:
-    """Resolves each variant's board and section, looking each name up on
-    Pinterest only once per request even when several variants share it."""
+    """Resolves each variant's board and section against the account's real
+    boards, fetched once per request. Unknown board IDs are rejected now
+    rather than failing with "Board not found" when the pin posts days later.
+    (GPTs often garble long numeric IDs, and ensure_board can fall back to
+    hard-coded IDs, so nothing is trusted without checking.)"""
 
     def __init__(self):
-        self._boards = {}
+        self._account_boards = None  # lowercased name -> id
         self._sections = {}
 
+    def _boards(self):
+        if self._account_boards is None:
+            self._account_boards = {board.get("name", "").strip().lower(): board["id"] for board in list_boards()}
+        return self._account_boards
+
     def _board_id(self, board_id, board_name):
+        boards = self._boards()
         if board_id:
+            if board_id not in boards.values():
+                raise ValueError(
+                    f"Board ID {board_id} isn't one of this account's boards. "
+                    "Use board_name with the exact name from getBoards instead."
+                )
             return board_id
         key = board_name.strip().lower()
-        if key not in self._boards:
-            board, _ = ensure_board(board_name)
-            self._boards[key] = board["id"]
-        return self._boards[key]
+        if key not in boards:
+            boards[key] = create_board(board_name.strip())["id"]
+        return boards[key]
 
     def _section_id(self, board_id, section_name):
         if not section_name:
@@ -266,6 +279,8 @@ def schedule_pins_endpoint(req: SchedulePinsRequest):
     for number, variant in enumerate(req.variants, start=1):
         try:
             destinations.append(resolver.destination(variant, req))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Variant {number}: {exc}") from exc
         except Exception as exc:
             raise HTTPException(
                 status_code=502, detail=f"Variant {number}: could not resolve the board or section: {exc}"

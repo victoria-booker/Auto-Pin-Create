@@ -47,11 +47,19 @@ class PinScheduleTests(unittest.TestCase):
             },
         )
         self.data_env.start()
-        self.board_patch = patch.object(self.schedule, "ensure_board", return_value=({"id": "board-1"}, False))
-        self.board_patch.start()
+        self.account_boards = [{"id": "board-1", "name": "90s Nostalgia"}, {"id": "board-7", "name": "Horror Tees"}]
+        self.list_boards = MagicMock(side_effect=lambda: list(self.account_boards))
+        self.create_board = MagicMock(side_effect=lambda name: {"id": f"new-{name}", "name": name})
+        self.board_patches = [
+            patch.object(self.schedule, "list_boards", self.list_boards),
+            patch.object(self.schedule, "create_board", self.create_board),
+        ]
+        for board_patch in self.board_patches:
+            board_patch.start()
 
     def tearDown(self):
-        self.board_patch.stop()
+        for board_patch in self.board_patches:
+            board_patch.stop()
         self.data_env.stop()
         shutil.rmtree(self.data_dir)
 
@@ -211,19 +219,18 @@ class PinScheduleTests(unittest.TestCase):
         self.assertEqual(self._schedule(variant_count=5).status_code, 422)
 
     def test_each_variant_can_target_its_own_board_and_section(self):
-        boards = MagicMock(side_effect=lambda name: ({"id": f"board-{name}"}, False))
         sections = MagicMock(side_effect=lambda board_id, name: ({"id": f"{board_id}/{name}"}, False))
         variant = {"description": "Desc", "image_base64": PNG_B64}
 
-        with patch.object(self.schedule, "ensure_board", boards), patch.object(self.schedule, "ensure_section", sections):
+        with patch.object(self.schedule, "ensure_section", sections):
             response = self._schedule(
-                board_name="Horror Tees",
+                board_name="horror tees",  # names match case-insensitively
                 section_name="Skulls",
                 variants=[
                     {**variant, "title": "Default board and section"},
                     {**variant, "title": "Own section on default board", "section_name": "Reapers"},
-                    {**variant, "title": "Own board", "board_name": "Halloween Gifts"},
-                    {**variant, "title": "Own board and section", "board_name": "90s Outfits", "section_name": "Grunge"},
+                    {**variant, "title": "Own board", "board_name": "90s Nostalgia"},
+                    {**variant, "title": "Own board and section", "board_id": "board-1", "section_name": "Grunge"},
                 ],
             )
 
@@ -232,14 +239,33 @@ class PinScheduleTests(unittest.TestCase):
         self.assertEqual(
             destinations,
             [
-                ("board-Horror Tees", "board-Horror Tees/Skulls"),
-                ("board-Horror Tees", "board-Horror Tees/Reapers"),
-                ("board-Halloween Gifts", None),  # the request's section belongs to the request's board
-                ("board-90s Outfits", "board-90s Outfits/Grunge"),
+                ("board-7", "board-7/Skulls"),
+                ("board-7", "board-7/Reapers"),
+                ("board-1", None),  # the request's section belongs to the request's board
+                ("board-1", "board-1/Grunge"),
             ],
         )
-        # each distinct board name is looked up once even though two variants share one
-        self.assertEqual(boards.call_count, 3)
+        # the account's boards are fetched once per request, and nothing new is created
+        self.assertEqual(self.list_boards.call_count, 1)
+        self.create_board.assert_not_called()
+
+    def test_unknown_board_name_creates_the_board_once(self):
+        variant = {"description": "Desc", "image_base64": PNG_B64, "board_name": "Halloween Gifts"}
+        response = self._schedule(variants=[{**variant, "title": "A"}, {**variant, "title": "B"}])
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual({pin["board_id"] for pin in response.json()["pins"]}, {"new-Halloween Gifts"})
+        self.create_board.assert_called_once_with("Halloween Gifts")
+
+    def test_unknown_board_id_is_rejected_before_queuing(self):
+        response = self._schedule(
+            board_name=None,
+            variants=[{"title": "Pin", "description": "Desc", "image_base64": PNG_B64, "board_id": "905786612495800999"}],
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("isn't one of this account's boards", response.json()["detail"])
+        self.assertEqual(self.pin_queue.list_pins(), [])
 
     def test_board_may_be_set_only_on_variants(self):
         response = self._schedule(
