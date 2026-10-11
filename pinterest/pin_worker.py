@@ -41,7 +41,6 @@ def _post(row):
         alt_text=row["alt_text"],
         board_section_id=row["section_id"],
         image_bytes=image_bytes,
-        filename=os.path.basename(row["image_path"]),
         content_type=row["content_type"],
     )
 

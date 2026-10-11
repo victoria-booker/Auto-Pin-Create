@@ -1,67 +1,61 @@
+import base64
 import os
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
 
 from pinterest import pinterest_pins  # noqa: E402
 
 
-class PinterestMediaUploadTests(unittest.TestCase):
+def _created(pin_id="pin-999"):
+    response = MagicMock(ok=True, status_code=201, headers={})
+    response.json.return_value = {"id": pin_id}
+    return response
+
+
+@patch("pinterest.pinterest_pins._headers", return_value={})
+class PinterestImageBytesTests(unittest.TestCase):
     @patch("pinterest.pinterest_pins.requests.post")
-    @patch("pinterest.pinterest_pins.requests.put")
-    def test_upload_image_bytes_returns_media_id(self, mock_put, mock_post):
-        mock_post.return_value.ok = True
-        mock_post.return_value.status_code = 200
-        mock_post.return_value.headers = {}
-        mock_post.return_value.json.return_value = {
-            "media_id": "abc123",
-            "upload_url": "https://upload.example/media",
-        }
-
-        mock_put.return_value.ok = True
-        mock_put.return_value.status_code = 200
-        mock_put.return_value.headers = {}
-        mock_put.return_value.text = ""
-
-        result = pinterest_pins.upload_image_bytes(b"fake-image-bytes", "test.png", "image/png")
-
-        self.assertEqual(result, "abc123")
-        mock_put.assert_called_once_with(
-            "https://upload.example/media",
-            headers={"Content-Type": "image/png"},
-            data=b"fake-image-bytes",
-        )
-
-    @patch("pinterest.pinterest_pins.upload_image_bytes")
-    @patch("pinterest.pinterest_pins.requests.post")
-    def test_create_pin_with_uploaded_media_uses_media_id(self, mock_post, mock_upload):
-        mock_upload.return_value = "media-456"
-
-        class FakeResponse:
-            ok = True
-            status_code = 201
-            text = ""
-            headers = {}
-
-            def json(self):
-                return {"id": "pin-999", "url": "https://example.com/pin/999"}
-
-        mock_post.return_value = FakeResponse()
+    def test_image_bytes_are_sent_inline_as_base64(self, mock_post, _headers):
+        mock_post.return_value = _created()
 
         result = pinterest_pins.create_pin(
             board_id="board-1",
             title="Test",
             description="Test pin",
             link="https://example.com",
-            image_url=None,
             image_bytes=b"raw-bytes",
-            board_section_id=None,
+            content_type="image/jpeg",
         )
 
         self.assertEqual(result["id"], "pin-999")
-        mock_upload.assert_called_once_with(b"raw-bytes", filename="pin.png", content_type="image/png")
+        # one call: straight to /pins, never the video-only /media endpoint
+        mock_post.assert_called_once()
+        url, kwargs = mock_post.call_args.args[0], mock_post.call_args.kwargs
+        self.assertTrue(url.endswith("/pins"))
+        self.assertEqual(
+            kwargs["json"]["media_source"],
+            {"source_type": "image_base64", "content_type": "image/jpeg", "data": base64.b64encode(b"raw-bytes").decode()},
+        )
+
+    @patch("pinterest.pinterest_pins.requests.post")
+    def test_image_url_is_passed_through(self, mock_post, _headers):
+        mock_post.return_value = _created()
+
+        pinterest_pins.create_pin("board-1", "T", "D", "https://example.com", image_url="https://img.example/p.png")
+
+        self.assertEqual(
+            mock_post.call_args.kwargs["json"]["media_source"],
+            {"source_type": "image_url", "url": "https://img.example/p.png"},
+        )
+
+    @patch("pinterest.pinterest_pins.requests.post")
+    def test_rejects_image_types_pinterest_cannot_take_inline(self, mock_post, _headers):
+        with self.assertRaises(ValueError):
+            pinterest_pins.create_pin("board-1", "T", "D", "https://x", image_bytes=b"x", content_type="image/webp")
+        mock_post.assert_not_called()
 
 
 if __name__ == "__main__":

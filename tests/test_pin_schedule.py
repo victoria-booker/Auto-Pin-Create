@@ -1,4 +1,5 @@
 import base64
+import io
 import os
 import shutil
 import tempfile
@@ -7,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import requests
 from fastapi.testclient import TestClient
+from PIL import Image
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 PNG_B64 = base64.b64encode(PNG_BYTES).decode()
@@ -178,6 +180,19 @@ class PinScheduleTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("Variant 2: Provide openaiFileIdRefs", response.json()["detail"])
         self.assertEqual(self.pin_queue.list_pins(), [])
+
+    def test_webp_images_are_converted_to_png_for_pinterest(self):
+        webp = io.BytesIO()
+        Image.new("RGB", (4, 6), "purple").save(webp, format="WEBP")
+        response = self._schedule(
+            variants=[{"title": "Pin", "description": "Desc", "image_base64": base64.b64encode(webp.getvalue()).decode()}]
+        )
+
+        self.assertEqual(response.status_code, 200)
+        row = self.pin_queue.get_pin(response.json()["pins"][0]["id"])
+        self.assertEqual(row["content_type"], "image/png")
+        with open(row["image_path"], "rb") as f:
+            self.assertTrue(f.read().startswith(b"\x89PNG"))
 
     def test_schedule_rejects_whole_request_when_one_image_is_bad(self):
         response = self._schedule(

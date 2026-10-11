@@ -237,46 +237,25 @@ def ensure_section(board_id, section_name):
     return create_section(board_id, section_name), True
 
 
-def upload_image_bytes(image_bytes, filename="pin.png", content_type="image/png"):
-    """Uploads image bytes to Pinterest and returns a Pinterest media_id."""
-    create_resp = requests.post(
-        f"{API_BASE}/media",
-        headers=_headers(),
-        json={"media_type": "image"},
-    )
-    _raise_pinterest_error(create_resp)
-    upload_data = create_resp.json()
-
-    upload_url = upload_data.get("upload_url")
-    if not upload_url:
-        raise ValueError(f"Pinterest media upload did not return an upload_url: {upload_data}")
-
-    put_resp = requests.put(
-        upload_url,
-        headers={"Content-Type": content_type},
-        data=image_bytes,
-    )
-    _raise_pinterest_error(put_resp)
-
-    media_id = upload_data.get("media_id")
-    if not media_id:
-        raise ValueError(f"Pinterest media upload did not return a media_id: {upload_data}")
-    return media_id
+BASE64_IMAGE_TYPES = {"image/png", "image/jpeg"}  # all Pinterest accepts for image_base64
 
 
-def create_pin(board_id, title, description, link, image_url=None, alt_text=None, board_section_id=None, image_bytes=None, filename="pin.png", content_type="image/png"):
+def create_pin(board_id, title, description, link, image_url=None, alt_text=None, board_section_id=None, image_bytes=None, content_type="image/png"):
     """
     board_id:          from list_boards()
     board_section_id:  optional, from list_sections(board_id) — omit to pin
                         straight to the board with no section
     image_url:         public URL Pinterest can fetch, or omit when using image_bytes
-    image_bytes:       raw image bytes to upload directly to Pinterest
+    image_bytes:       raw PNG or JPEG bytes, sent inline with the pin. (Pinterest's
+                        /media upload endpoint only accepts video, not images.)
     """
     if image_bytes is not None:
-        media_id = upload_image_bytes(image_bytes, filename=filename, content_type=content_type)
+        if content_type not in BASE64_IMAGE_TYPES:
+            raise ValueError(f"Pinterest only accepts PNG or JPEG image data, not {content_type}.")
         media_source = {
-            "source_type": "media_id",
-            "media_id": media_id,
+            "source_type": "image_base64",
+            "content_type": content_type,
+            "data": base64.b64encode(image_bytes).decode("ascii"),
         }
     else:
         if not image_url:

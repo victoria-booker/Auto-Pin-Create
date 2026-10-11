@@ -5,16 +5,18 @@ publish time; pinterest/pin_worker.py posts them when they come due.
 """
 import base64
 import binascii
+import io
 from datetime import datetime, timedelta, timezone
 
 import requests
 from fastapi import APIRouter, Depends, HTTPException, Query
+from PIL import Image
 from pydantic import BaseModel, Field
 
 from api_auth import require_api_key
 from pinterest import pin_queue
 from pinterest.pin_slots import next_free_slot
-from pinterest.pinterest_pins import ensure_board, ensure_section
+from pinterest.pinterest_pins import BASE64_IMAGE_TYPES, ensure_board, ensure_section
 from routers.pins import OpenAIFileRef, _image_source_url, _request_image_ref
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
@@ -212,7 +214,20 @@ def _variant_image(variant, fallback_ref=None):
     content_type = _sniff_content_type(data)
     if not content_type:
         raise ValueError("The image must be a PNG, JPEG, WebP, or GIF file.")
+    if content_type not in BASE64_IMAGE_TYPES:
+        data, content_type = _to_png(data), "image/png"
     return data, content_type
+
+
+def _to_png(data):
+    """Pinterest only takes PNG or JPEG image data, so convert WebP/GIF up front."""
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            output = io.BytesIO()
+            image.convert("RGBA").save(output, format="PNG")
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"Could not read the image: {exc}") from exc
+    return output.getvalue()
 
 
 # ---------- endpoints ----------

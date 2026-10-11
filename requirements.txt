@@ -6,3 +6,4 @@ apify-client>=2,<4
 anthropic>=0.40,<1
 tzdata>=2024.1
 python-multipart>=0.0.18
+Pillow>=10
