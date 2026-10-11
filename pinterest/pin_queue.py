@@ -190,16 +190,36 @@ def reschedule_pin(pin_id, publish_at_iso):
     return cursor.rowcount == 1
 
 
-def requeue_pin(pin_id, publish_at_iso):
-    """Puts a failed or cancelled pin back in the queue with fresh attempts.
-    Returns False if it's in any other state."""
+def requeue_pin(pin_id, publish_at_iso, board_id=None):
+    """Puts a failed or cancelled pin back in the queue with fresh attempts,
+    optionally on a different board. Returns False if it's in any other state."""
     with closing(_connect()) as conn, conn:
         cursor = conn.execute(
             "UPDATE scheduled_pins SET status = ?, attempts = 0, last_error = NULL, publish_at = ?, next_attempt_at = ? "
             "WHERE id = ? AND status IN (?, ?)",
             (STATUS_QUEUED, publish_at_iso, publish_at_iso, pin_id, STATUS_FAILED, STATUS_CANCELLED),
         )
+        if cursor.rowcount == 1 and board_id:
+            _set_board(conn, pin_id, board_id)
     return cursor.rowcount == 1
+
+
+def change_board(pin_id, board_id):
+    """Moves a queued pin to another board. Returns False if it isn't queued."""
+    with closing(_connect()) as conn, conn:
+        row = conn.execute("SELECT status FROM scheduled_pins WHERE id = ?", (pin_id,)).fetchone()
+        if row is None or row["status"] != STATUS_QUEUED:
+            return False
+        _set_board(conn, pin_id, board_id)
+    return True
+
+
+def _set_board(conn, pin_id, board_id):
+    # a section belongs to one board, so it can't carry over to a different board
+    conn.execute(
+        "UPDATE scheduled_pins SET section_id = CASE WHEN board_id = ? THEN section_id END, board_id = ? WHERE id = ?",
+        (board_id, board_id, pin_id),
+    )
 
 
 def requeue_interrupted():

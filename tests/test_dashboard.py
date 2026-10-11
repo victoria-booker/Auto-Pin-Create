@@ -203,6 +203,46 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Only queued pins can be rescheduled", unquote(response.headers["location"]))
         self.assertEqual(self.pin_queue.get_pin(pin_id)["status"], "posted")
 
+    # ---------- boards ----------
+
+    def _use_boards(self, boards):
+        self.boards_patch.stop()
+        self.boards_patch = patch.object(self.dashboard, "list_boards", return_value=boards)
+        self.boards_patch.start()
+        self.dashboard._board_names["fetched_at"] = 0
+
+    def test_move_queued_pin_to_another_board_clears_section(self):
+        self._use_boards([{"id": "board-1", "name": "Horror Tees"}, {"id": "board-2", "name": "Halloween Gifts"}])
+        pin_id = self._add_pin()
+        self.pin_queue.update_pin(pin_id, section_id="section-on-board-1")
+
+        response = self._post(f"/dashboard/pins/{pin_id}/board", board_id="board-2")
+
+        self.assertIn("Moved to Halloween Gifts", unquote(response.headers["location"]))
+        row = self.pin_queue.get_pin(pin_id)
+        self.assertEqual((row["board_id"], row["section_id"]), ("board-2", None))
+
+    def test_requeue_onto_a_new_board_after_board_not_found(self):
+        self._use_boards([{"id": "board-2", "name": "Halloween Gifts"}])
+        pin_id = self._add_pin()  # on board-1, which no longer exists
+        self.pin_queue.update_pin(pin_id, status="failed", last_error="Pinterest HTTP 404; code=40; Board not found.")
+
+        failed_page = self.client.get("/dashboard?tab=failed").text
+        self.assertIn("board no longer exists", failed_page)
+        self.assertIn('<option value="" disabled selected>Choose a board</option>', failed_page)
+
+        self._post(f"/dashboard/pins/{pin_id}/requeue", when="2026-10-22T14:00", board_id="board-2")
+
+        row = self.pin_queue.get_pin(pin_id)
+        self.assertEqual((row["status"], row["board_id"], row["last_error"]), ("queued", "board-2", None))
+
+    def test_board_not_on_account_is_rejected(self):
+        pin_id = self._add_pin()
+        response = self._post(f"/dashboard/pins/{pin_id}/board", board_id="905786612495800999")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.pin_queue.get_pin(pin_id)["board_id"], "board-1")
+
     def test_invalid_time_is_rejected(self):
         pin_id = self._add_pin()
         self.assertEqual(self._post(f"/dashboard/pins/{pin_id}/reschedule", when="next tuesday").status_code, 400)

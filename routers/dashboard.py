@@ -77,13 +77,24 @@ _board_names = {"fetched_at": 0.0, "names": {}}
 
 def _board_name(board_id):
     """Board names aren't stored in the queue, so look them up (cached) for display."""
-    if time.time() - _board_names["fetched_at"] > BOARD_CACHE_SECONDS:
+    return _account_boards().get(board_id) or board_id
+
+
+def _account_boards(refresh=False):
+    """{board_id: name} for the account, cached for BOARD_CACHE_SECONDS."""
+    if refresh or time.time() - _board_names["fetched_at"] > BOARD_CACHE_SECONDS:
         try:
             _board_names["names"] = {board["id"]: board.get("name", "") for board in list_boards()}
         except Exception:
             pass  # show IDs rather than break the page
         _board_names["fetched_at"] = time.time()
-    return _board_names["names"].get(board_id) or board_id
+    return _board_names["names"]
+
+
+def _require_account_board(board_id):
+    # refresh once in case the board was created since the list was cached
+    if board_id not in _account_boards() and board_id not in _account_boards(refresh=True):
+        raise HTTPException(status_code=400, detail="That board isn't on this Pinterest account.")
 
 
 def _parse_utc(iso):
@@ -111,7 +122,7 @@ def _from_local_input(value):
 
 
 def _check_same_origin(request: Request):
-    # the browser resends Basic credentials automatically, so refuse form posts from other sites
+    # the browser sends the session cookie with same-site navigations, so refuse form posts from other sites
     source = request.headers.get("origin") or request.headers.get("referer")
     if source and urlparse(source).netloc != request.headers.get("host"):
         raise HTTPException(status_code=403, detail="Cross-site request refused.")
@@ -158,7 +169,7 @@ nav a.on { background:var(--text); color:var(--bg); border-color:var(--text); }
 .err { color:var(--bad); font-size:13px; margin-top:6px; overflow-wrap:anywhere; }
 .actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
 .actions form { display:flex; gap:6px; align-items:center; margin:0; }
-input[type=datetime-local] { font:inherit; padding:5px 6px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); }
+input[type=datetime-local], select { font:inherit; padding:5px 6px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); }
 button { font:inherit; font-size:14px; padding:6px 12px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--text); cursor:pointer; }
 button.primary { background:var(--text); color:var(--bg); border-color:var(--text); }
 button.danger { color:var(--bad); }
@@ -172,14 +183,29 @@ header form { margin:0; }
 """
 
 
+def _board_select(current_board_id):
+    """<select> of the account's boards. A board that no longer exists can't be
+    preselected, so the user has to pick a real one."""
+    boards = _account_boards()
+    known = current_board_id in boards
+    options = [] if known else ['<option value="" disabled selected>Choose a board</option>']
+    for board_id, name in sorted(boards.items(), key=lambda item: item[1].lower()):
+        selected = " selected" if board_id == current_board_id else ""
+        options.append(f'<option value="{html.escape(board_id)}"{selected}>{html.escape(name)}</option>')
+    return f'<select name="board_id" required>{"".join(options)}</select>'
+
+
 def _render_card(row, tab):
     e = html.escape
     pin_id = row["id"]
     status = row["status"]
     when_label = "Posted" if status == pin_queue.STATUS_POSTED else "Posts"
     when_iso = row["posted_at"] if status == pin_queue.STATUS_POSTED else row["publish_at"]
+    boards = _account_boards()
+    board_missing = bool(boards) and row["board_id"] not in boards and status != pin_queue.STATUS_POSTED
+    board_note = ' <span class="err">· board no longer exists, pick another</span>' if board_missing else ""
     lines = [
-        f'<div class="meta">Board: {e(_board_name(row["board_id"]))}</div>',
+        f'<div class="meta">Board: {e(_board_name(row["board_id"]))}{board_note}</div>',
         f'<div class="meta">Link: <a href="{e(row["link"])}" target="_blank" rel="noopener">{e(row["link"])}</a></div>',
     ]
     if row["pin_id"]:
@@ -198,10 +224,13 @@ def _render_card(row, tab):
           <button class="primary">Save time</button></form>
         <form method="post" action="{action}/post-now">{hidden_tab}<button>Post now</button></form>
         <form method="post" action="{action}/cancel" onsubmit="return confirm('Cancel this pin?')">{hidden_tab}
-          <button class="danger">Cancel</button></form>"""
+          <button class="danger">Cancel</button></form>
+        <form method="post" action="{action}/board">{hidden_tab}
+          {_board_select(row['board_id'])}<button>Move</button></form>"""
     elif status in (pin_queue.STATUS_FAILED, pin_queue.STATUS_CANCELLED):
         actions = f"""
         <form method="post" action="{action}/requeue">{hidden_tab}
+          {_board_select(row['board_id'])}
           <input type="datetime-local" name="when" value="{_local_input_value(pin_queue.now_iso())}" required>
           <button class="primary">Requeue</button></form>"""
 
@@ -338,10 +367,24 @@ def dashboard_cancel(pin_id: int, request: Request, tab: str = Form("upcoming"))
 
 
 @router.post("/pins/{pin_id}/requeue")
-def dashboard_requeue(pin_id: int, request: Request, when: str = Form(...), tab: str = Form("failed")):
+def dashboard_requeue(
+    pin_id: int, request: Request, when: str = Form(...), board_id: str = Form(""), tab: str = Form("failed")
+):
     _check_same_origin(request)
     _pin_or_404(pin_id)
     new_time = _from_local_input(when)
-    if not pin_queue.requeue_pin(pin_id, new_time):
+    if board_id:
+        _require_account_board(board_id)
+    if not pin_queue.requeue_pin(pin_id, new_time, board_id=board_id or None):
         return _back(tab, "Only failed or cancelled pins can be requeued.")
     return _back("upcoming", f"Requeued for {_local_display(new_time)}.")
+
+
+@router.post("/pins/{pin_id}/board")
+def dashboard_change_board(pin_id: int, request: Request, board_id: str = Form(...), tab: str = Form("upcoming")):
+    _check_same_origin(request)
+    _pin_or_404(pin_id)
+    _require_account_board(board_id)
+    if not pin_queue.change_board(pin_id, board_id):
+        return _back(tab, "Only queued pins can be moved; requeue failed pins instead.")
+    return _back(tab, f"Moved to {_board_name(board_id)}.")
